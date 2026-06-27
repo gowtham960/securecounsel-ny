@@ -1,0 +1,10 @@
+Document ID: ny_labor_law_191d_demo
+Jurisdiction: NY
+Citation: NY Labor Law § 191-d
+Title: Demo New York Employment Restriction Authority
+
+This demo authority placeholder represents curated New York employment-related legal authority. It should be replaced later with text ingested from official New York legal sources.
+
+Employment-related restrictions should be reviewed for statutory limits, public policy concerns, enforceability, and whether the restriction imposes an unreasonable burden on the employee.
+
+The system should not claim to contain all New York law. It contains a curated and extensible New York legal authority corpus.

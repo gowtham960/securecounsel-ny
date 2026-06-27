@@ -1,0 +1,11 @@
+Document ID: kb_restrictive_covenants_playbook
+Firm ID: firm_demo
+Title: Firm Restrictive Covenants Playbook
+
+When reviewing restrictive covenants, attorneys should assess duration, geographic scope, legitimate business interest, employee role, consideration, and whether the restriction is narrowly tailored.
+
+New York courts generally scrutinize employee non-compete agreements closely. A covenant that is overbroad in time, geography, or restricted activity may be partially enforced, narrowed, or rejected depending on facts and current law.
+
+For employment agreements, attorneys should separately analyze non-competition, non-solicitation, confidentiality, garden leave, trade secret protection, and client relationship restrictions.
+
+A two-year statewide restriction for a sales employee may raise enforceability concerns if the employer cannot show a legitimate business interest and narrow tailoring.

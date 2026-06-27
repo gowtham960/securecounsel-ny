@@ -1,0 +1,19 @@
+Document ID: doc_john_smith_employment_agreement
+Matter ID: matter_acme_smith
+Firm ID: firm_demo
+Title: John Smith Employment Agreement
+
+Section 1. Employment Role.
+John Smith is employed as a senior sales manager for Acme Medical Devices LLC.
+
+Section 7. Non-Competition.
+Employee shall not engage in a competing business within New York State for a period of two years following termination of employment.
+
+Section 8. Confidential Information.
+Employee shall not disclose client lists, pricing strategies, sales methods, trade secrets, or confidential business information.
+
+Section 9. Non-Solicitation.
+For twelve months following termination, Employee shall not solicit clients with whom Employee had material contact during the last year of employment.
+
+Section 10. Termination.
+Either party may terminate employment with thirty days written notice. The employer may terminate immediately for cause.
