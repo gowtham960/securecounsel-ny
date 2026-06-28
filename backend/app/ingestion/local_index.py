@@ -4,6 +4,7 @@ from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BASE_DIR / "data"
+UPLOADED_DOCS_DIR = DATA_DIR / "uploaded_docs"
 
 
 def chunk_text(text: str, max_words: int = 90, overlap_words: int = 20) -> list[str]:
@@ -42,7 +43,7 @@ def _extract_field(text: str, field_name: str, default: str | None = None) -> st
     return default
 
 
-def load_local_documents() -> list[dict[str, Any]]:
+def _load_seed_documents() -> list[dict[str, Any]]:
     documents: list[dict[str, Any]] = []
 
     source_configs = [
@@ -93,6 +94,45 @@ def load_local_documents() -> list[dict[str, Any]]:
             )
 
     return documents
+
+
+def _load_uploaded_txt_documents() -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+
+    if not UPLOADED_DOCS_DIR.exists():
+        return documents
+
+    for matter_folder in UPLOADED_DOCS_DIR.iterdir():
+        if not matter_folder.is_dir():
+            continue
+
+        matter_id = matter_folder.name
+
+        for path in matter_folder.glob("*.txt"):
+            text = _read_text_file(path)
+
+            document_id = path.stem
+            title = path.name
+
+            documents.append(
+                {
+                    "collection": "uploaded_matter_docs",
+                    "document_id": document_id,
+                    "firm_id": "firm_demo",
+                    "matter_id": matter_id,
+                    "citation": f"Uploaded document: {path.name}",
+                    "title": title,
+                    "source_type": "uploaded_txt",
+                    "text": text,
+                    "path": str(path),
+                }
+            )
+
+    return documents
+
+
+def load_local_documents() -> list[dict[str, Any]]:
+    return _load_seed_documents() + _load_uploaded_txt_documents()
 
 
 def build_local_chunks() -> list[dict[str, Any]]:

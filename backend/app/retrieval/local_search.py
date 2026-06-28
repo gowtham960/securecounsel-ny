@@ -8,6 +8,20 @@ from app.ingestion.local_index import build_local_chunks
 _LOCAL_CHUNKS_CACHE: list[dict] | None = None
 
 
+SOURCE_ALIASES = {
+    # A current matter includes seeded private matter docs and user-uploaded matter docs.
+    "private_matter_docs": ["private_matter_docs", "uploaded_matter_docs"],
+    "current_matter": ["private_matter_docs", "uploaded_matter_docs"],
+
+    # Explicit uploaded-doc search support for future tool routing.
+    "uploaded_matter_docs": ["uploaded_matter_docs"],
+
+    # Non-matter collections.
+    "firm_knowledge_base": ["firm_knowledge_base"],
+    "ny_legal_authorities": ["ny_legal_authorities"],
+}
+
+
 def get_local_chunks() -> list[dict]:
     global _LOCAL_CHUNKS_CACHE
 
@@ -55,6 +69,12 @@ def lexical_score(query: str, text: str) -> float:
         "confidential information",
         "non-solicitation",
         "restrictive covenant",
+        "uploaded document",
+        "uploaded vendor",
+        "vendor document",
+        "payment terms",
+        "invoices",
+        "thirty days",
     ]
 
     for phrase in important_phrases:
@@ -64,6 +84,10 @@ def lexical_score(query: str, text: str) -> float:
     return min(1.0, normalized + phrase_boost)
 
 
+def _resolve_allowed_collections(source: str) -> list[str]:
+    return SOURCE_ALIASES.get(source, [source])
+
+
 def filter_authorized_chunks(
     chunks: list[dict],
     source: str,
@@ -71,15 +95,18 @@ def filter_authorized_chunks(
     matter_id: str | None,
 ) -> list[dict]:
     authorized = []
+    allowed_collections = set(_resolve_allowed_collections(source))
 
     for chunk in chunks:
-        if chunk.get("collection") != source:
+        collection = chunk.get("collection")
+
+        if collection not in allowed_collections:
             continue
 
         if chunk.get("firm_id") not in {None, firm_id}:
             continue
 
-        if source == "private_matter_docs":
+        if collection in {"private_matter_docs", "uploaded_matter_docs"}:
             if not matter_id:
                 continue
 
