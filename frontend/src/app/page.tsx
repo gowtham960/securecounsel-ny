@@ -21,6 +21,17 @@ type Matter = {
   primary_document: string;
 };
 
+type UploadedDocument = {
+  document_id: string;
+  matter_id: string;
+  filename: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  content_type: string;
+  status: string;
+  size_bytes: number;
+};
+
 type Citation = {
   collection: string;
   document_id: string;
@@ -134,14 +145,19 @@ export default function Home() {
   );
   const [matters, setMatters] = useState<Matter[]>([]);
   const [selectedMatter, setSelectedMatter] = useState<Matter | null>(null);
+  const [documents, setDocuments] = useState<UploadedDocument[]>([]);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [question, setQuestion] = useState(
     "What does the agreement say about non-solicitation?"
   );
   const [searchScope, setSearchScope] = useState("current_matter");
   const [chatResponse, setChatResponse] = useState<ChatResponse | null>(null);
   const [isLoadingMatters, setIsLoadingMatters] = useState(false);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(false);
+  const [isUploadingDocument, setIsUploadingDocument] = useState(false);
   const [isAsking, setIsAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [uploadMessage, setUploadMessage] = useState("");
 
   const selectedUser = useMemo(() => {
     return (
@@ -155,6 +171,9 @@ export default function Home() {
     setError(null);
     setSelectedMatter(null);
     setChatResponse(null);
+    setDocuments([]);
+    setSelectedFile(null);
+    setUploadMessage("");
 
     try {
       const response = await fetch(`${API_BASE_URL}/matters`, {
@@ -176,8 +195,95 @@ export default function Home() {
     }
   }
 
+  async function loadDocuments(userEmail: string, matterId: string) {
+    setIsLoadingDocuments(true);
+    setUploadMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/documents?matter_id=${encodeURIComponent(matterId)}`,
+        {
+          headers: {
+            "x-demo-user": userEmail,
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to load documents.");
+      }
+
+      setDocuments(data.items || []);
+    } catch (err) {
+      setDocuments([]);
+      setUploadMessage(
+        err instanceof Error ? err.message : "Failed to load documents."
+      );
+    } finally {
+      setIsLoadingDocuments(false);
+    }
+  }
+
+  async function uploadDocument() {
+    if (!selectedMatter) {
+      setUploadMessage("Select a matter first.");
+      return;
+    }
+
+    if (!selectedFile) {
+      setUploadMessage("Choose a .txt file first.");
+      return;
+    }
+
+    setIsUploadingDocument(true);
+    setUploadMessage("");
+
+    const formData = new FormData();
+    formData.append("matter_id", selectedMatter.matter_id);
+    formData.append("file", selectedFile);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/documents/upload`, {
+        method: "POST",
+        headers: {
+          "x-demo-user": selectedUserEmail,
+        },
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Upload failed.");
+      }
+
+      setSelectedFile(null);
+      setUploadMessage(`Uploaded ${data.filename}`);
+      await loadDocuments(selectedUserEmail, selectedMatter.matter_id);
+    } catch (err) {
+      setUploadMessage(err instanceof Error ? err.message : "Upload failed.");
+    } finally {
+      setIsUploadingDocument(false);
+    }
+  }
+
+  function openMatter(matter: Matter) {
+    setSelectedMatter(matter);
+    setChatResponse(null);
+    setError(null);
+    setSelectedFile(null);
+    setUploadMessage("");
+    void loadDocuments(selectedUserEmail, matter.matter_id);
+  }
+
   useEffect(() => {
-    loadMatters(selectedUserEmail);
+    async function loadSelectedUserMatters() {
+      await loadMatters(selectedUserEmail);
+    }
+
+    void loadSelectedUserMatters();
   }, [selectedUserEmail]);
 
   async function askQuestion() {
@@ -221,6 +327,9 @@ export default function Home() {
   function backToMatters() {
     setSelectedMatter(null);
     setChatResponse(null);
+    setDocuments([]);
+    setSelectedFile(null);
+    setUploadMessage("");
     setError(null);
   }
 
@@ -298,7 +407,7 @@ export default function Home() {
                   {matters.map((matter) => (
                     <button
                       key={matter.matter_id}
-                      onClick={() => setSelectedMatter(matter)}
+                      onClick={() => openMatter(matter)}
                       className="rounded-2xl border border-slate-800 bg-slate-900 p-5 text-left transition hover:border-cyan-400 hover:bg-slate-900/70"
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -374,12 +483,103 @@ export default function Home() {
                   <button className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-left text-sm text-slate-400" disabled>
                     Draft from Matter Context — coming next
                   </button>
-                  <button className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-left text-sm text-slate-400" disabled>
-                    Document Upload — coming soon
+                  <button className="rounded-xl border border-cyan-700 bg-cyan-950/40 px-4 py-3 text-left text-sm font-semibold text-cyan-200">
+                    Document Upload
                   </button>
                   <button className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-left text-sm text-slate-400" disabled>
                     Key Dates — coming soon
                   </button>
+                </div>
+              </Section>
+
+              <Section title="Document Upload">
+                <p className="text-sm text-slate-300">
+                  Upload matter-specific .txt documents. The backend checks
+                  whether the current user can access this matter before saving
+                  the file.
+                </p>
+
+                <div className="mt-4 rounded-2xl border border-dashed border-slate-700 bg-slate-900/70 p-4">
+                  <input
+                    type="file"
+                    accept=".txt,text/plain"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] || null;
+                      setSelectedFile(file);
+                    }}
+                    className="w-full text-sm text-slate-300 file:mr-4 file:rounded-xl file:border-0 file:bg-cyan-400 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-slate-950 hover:file:bg-cyan-300"
+                  />
+
+                  {selectedFile && (
+                    <p className="mt-3 text-xs text-slate-400">
+                      Selected: {selectedFile.name} · {selectedFile.size} bytes
+                    </p>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => void uploadDocument()}
+                    disabled={isUploadingDocument || !selectedFile}
+                    className="mt-4 w-full rounded-2xl bg-cyan-400 px-5 py-3 font-semibold text-slate-950 hover:bg-cyan-300 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isUploadingDocument ? "Uploading..." : "Upload Document"}
+                  </button>
+
+                  {uploadMessage && (
+                    <p className="mt-3 text-sm text-slate-300">
+                      {uploadMessage}
+                    </p>
+                  )}
+                </div>
+
+                <div className="mt-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-white">
+                      Uploaded Documents
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void loadDocuments(
+                          selectedUserEmail,
+                          selectedMatter.matter_id
+                        )
+                      }
+                      className="rounded-lg border border-slate-700 px-3 py-1 text-xs text-slate-300 hover:border-cyan-400 hover:text-cyan-300"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  {isLoadingDocuments ? (
+                    <p className="mt-3 text-sm text-slate-400">
+                      Loading documents...
+                    </p>
+                  ) : documents.length === 0 ? (
+                    <p className="mt-3 text-sm text-slate-400">
+                      No uploaded documents for this matter yet.
+                    </p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {documents.map((document) => (
+                        <div
+                          key={document.document_id}
+                          className="rounded-2xl border border-slate-800 bg-slate-900 p-4"
+                        >
+                          <p className="text-sm font-semibold text-white">
+                            {document.filename}
+                          </p>
+                          <p className="mt-2 text-xs text-slate-400">
+                            Uploaded by {document.uploaded_by}
+                          </p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {document.size_bytes} bytes · {document.status} ·{" "}
+                            {document.uploaded_at}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </Section>
             </div>
