@@ -30,6 +30,8 @@ type UploadedDocument = {
   content_type: string;
   status: string;
   size_bytes: number;
+  source_extension?: string;
+  extracted_text_bytes?: number;
 };
 
 type Citation = {
@@ -147,9 +149,7 @@ export default function Home() {
   const [selectedMatter, setSelectedMatter] = useState<Matter | null>(null);
   const [documents, setDocuments] = useState<UploadedDocument[]>([]);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [question, setQuestion] = useState(
-    "What does the agreement say about non-solicitation?"
-  );
+  const [question, setQuestion] = useState("");
   const [searchScope, setSearchScope] = useState("current_matter");
   const [chatResponse, setChatResponse] = useState<ChatResponse | null>(null);
   const [isLoadingMatters, setIsLoadingMatters] = useState(false);
@@ -233,7 +233,7 @@ export default function Home() {
     }
 
     if (!selectedFile) {
-      setUploadMessage("Choose a .txt file first.");
+      setUploadMessage("Choose a TXT, PDF, DOCX, XLSX, or CSV file first.");
       return;
     }
 
@@ -260,7 +260,7 @@ export default function Home() {
       }
 
       setSelectedFile(null);
-      setUploadMessage(`Uploaded ${data.filename}`);
+      setUploadMessage(`Uploaded and indexed ${data.filename}`);
       await loadDocuments(selectedUserEmail, selectedMatter.matter_id);
     } catch (err) {
       setUploadMessage(err instanceof Error ? err.message : "Upload failed.");
@@ -292,6 +292,11 @@ export default function Home() {
       return;
     }
 
+    if (!question.trim()) {
+      setError("Enter a question first.");
+      return;
+    }
+
     setIsAsking(true);
     setError(null);
     setChatResponse(null);
@@ -313,7 +318,9 @@ export default function Home() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.detail ?? `Request failed. Status ${response.status}`);
+        throw new Error(
+          data.detail ?? `Request failed. Status ${response.status}`
+        );
       }
 
       setChatResponse(data);
@@ -445,7 +452,7 @@ export default function Home() {
         )}
 
         {selectedMatter && (
-          <div className="mt-6 grid gap-6 xl:grid-cols-[420px_1fr]">
+          <div className="mt-6 grid gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
             <div className="space-y-6">
               <Section title="Selected Matter">
                 <button
@@ -480,13 +487,19 @@ export default function Home() {
                   <button className="rounded-xl border border-cyan-700 bg-cyan-950/40 px-4 py-3 text-left text-sm font-semibold text-cyan-200">
                     Matter Chat
                   </button>
-                  <button className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-left text-sm text-slate-400" disabled>
+                  <button
+                    className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-left text-sm text-slate-400"
+                    disabled
+                  >
                     Draft from Matter Context — coming next
                   </button>
                   <button className="rounded-xl border border-cyan-700 bg-cyan-950/40 px-4 py-3 text-left text-sm font-semibold text-cyan-200">
                     Document Upload
                   </button>
-                  <button className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-left text-sm text-slate-400" disabled>
+                  <button
+                    className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-left text-sm text-slate-400"
+                    disabled
+                  >
                     Key Dates — coming soon
                   </button>
                 </div>
@@ -494,15 +507,15 @@ export default function Home() {
 
               <Section title="Document Upload">
                 <p className="text-sm text-slate-300">
-                  Upload matter-specific .txt documents. The backend checks
-                  whether the current user can access this matter before saving
-                  the file.
+                  Upload matter-specific TXT, PDF, DOCX, XLSX, or CSV
+                  documents. The backend checks whether the current user can
+                  access this matter before saving and indexing the file.
                 </p>
 
                 <div className="mt-4 rounded-2xl border border-dashed border-slate-700 bg-slate-900/70 p-4">
                   <input
                     type="file"
-                    accept=".txt,text/plain"
+                    accept=".txt,.pdf,.docx,.xlsx,.csv"
                     onChange={(event) => {
                       const file = event.target.files?.[0] || null;
                       setSelectedFile(file);
@@ -573,9 +586,17 @@ export default function Home() {
                             Uploaded by {document.uploaded_by}
                           </p>
                           <p className="mt-1 text-xs text-slate-500">
-                            {document.size_bytes} bytes · {document.status} ·{" "}
-                            {document.uploaded_at}
+                            {document.size_bytes} bytes ·{" "}
+                            {document.source_extension ??
+                              document.content_type}{" "}
+                            · {document.status} · {document.uploaded_at}
                           </p>
+                          {document.extracted_text_bytes !== undefined && (
+                            <p className="mt-1 text-xs text-slate-500">
+                              Extracted text: {document.extracted_text_bytes}{" "}
+                              bytes
+                            </p>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -584,7 +605,7 @@ export default function Home() {
               </Section>
             </div>
 
-            <div className="space-y-6">
+            <div className="min-w-0 space-y-6">
               <Section title="Matter Chat">
                 <label className="block text-sm font-medium text-slate-300">
                   Question
@@ -592,6 +613,7 @@ export default function Home() {
                 <textarea
                   value={question}
                   onChange={(event) => setQuestion(event.target.value)}
+                  placeholder="Ask a question about the selected matter..."
                   className="mt-2 min-h-28 w-full rounded-2xl border border-slate-700 bg-slate-900 p-4 text-sm text-white outline-none focus:border-cyan-400"
                 />
 
@@ -622,9 +644,11 @@ export default function Home() {
               {chatResponse && (
                 <>
                   <Section title="Answer">
-                    <pre className="whitespace-pre-wrap rounded-2xl bg-slate-900 p-4 text-sm leading-7 text-slate-100">
-                      {chatResponse.answer}
-                    </pre>
+                    <div className="max-h-[320px] overflow-y-auto overflow-x-hidden rounded-2xl bg-slate-900 p-4">
+                      <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-100">
+                        {chatResponse.answer}
+                      </pre>
+                    </div>
                   </Section>
 
                   <Section title="Security">

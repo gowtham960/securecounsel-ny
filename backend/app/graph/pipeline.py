@@ -1,5 +1,7 @@
+import re
 import time
 import uuid
+from collections import defaultdict
 
 from app.agent.evidence_grader import grade_evidence
 from app.agent.planner import plan_legal_task
@@ -18,6 +20,376 @@ from app.retrieval.hybrid import hybrid_retrieve
 from app.retrieval.reranker import rerank_chunks
 from app.security.injection import classify_prompt_injection
 from app.security.pii import redact_pii
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-zA-Z0-9\-]+", text.lower()))
+
+
+def _query_intent_terms(query: str) -> dict:
+    lowered = query.lower()
+
+    payment_terms = {
+        "payment",
+        "payments",
+        "invoice",
+        "invoices",
+        "due",
+        "paid",
+        "pay",
+        "payable",
+        "receipt",
+        "net",
+        "net 30",
+        "thirty days",
+        "30 days",
+        "schedule",
+    }
+
+    termination_terms = {
+        "termination",
+        "terminate",
+        "notice",
+        "cause",
+        "end",
+        "ending",
+    }
+
+    confidentiality_terms = {
+        "confidential",
+        "confidentiality",
+        "disclose",
+        "disclosure",
+        "proprietary",
+        "pricing",
+        "customer lists",
+    }
+
+    restrictive_covenant_terms = {
+        "non-solicitation",
+        "non solicitation",
+        "non-compete",
+        "non compete",
+        "restrictive covenant",
+        "solicit",
+        "clients",
+    }
+
+    return {
+        "payment": any(term in lowered for term in payment_terms),
+        "termination": any(term in lowered for term in termination_terms),
+        "confidentiality": any(term in lowered for term in confidentiality_terms),
+        "restrictive_covenant": any(
+            term in lowered for term in restrictive_covenant_terms
+        ),
+    }
+
+
+def _chunk_matches_query_intent(query: str, chunk: dict) -> bool:
+    text = chunk.get("text", "").lower()
+    query_lower = query.lower()
+    intent = _query_intent_terms(query)
+
+    if intent["payment"]:
+        has_payment_language = any(
+            term in text
+            for term in [
+                "payment",
+                "payments",
+                "invoice",
+                "invoices",
+                "due",
+                "receipt",
+                "net 30",
+                "thirty days",
+                "30 days",
+                "pay invoices",
+                "amount",
+            ]
+        )
+
+        has_payment_answer_language = any(
+            term in text
+            for term in [
+                "invoice",
+                "invoices",
+                "due",
+                "receipt",
+                "net 30",
+                "thirty days",
+                "30 days",
+                "pay invoices",
+            ]
+        )
+
+        return has_payment_language and has_payment_answer_language
+
+    if intent["termination"]:
+        return any(
+            term in text
+            for term in [
+                "termination",
+                "terminate",
+                "notice",
+                "cause",
+                "thirty days written notice",
+            ]
+        )
+
+    if intent["confidentiality"]:
+        return any(
+            term in text
+            for term in [
+                "confidential",
+                "confidentiality",
+                "disclose",
+                "proprietary",
+                "pricing",
+                "customer lists",
+            ]
+        )
+
+    if intent["restrictive_covenant"]:
+        return any(
+            term in text
+            for term in [
+                "non-solicitation",
+                "non solicitation",
+                "non-compete",
+                "non compete",
+                "restrictive covenant",
+                "solicit",
+            ]
+        )
+
+    query_tokens = _tokenize(query_lower)
+    chunk_tokens = _tokenize(text)
+
+    if not query_tokens or not chunk_tokens:
+        return False
+
+    overlap = query_tokens.intersection(chunk_tokens)
+    return len(overlap) >= 2
+
+
+def _score_chunk_for_evidence_selection(query: str, chunk: dict) -> float:
+    base_score = float(chunk.get("score") or 0.0)
+    text = chunk.get("text", "").lower()
+    source_type = chunk.get("source_type") or ""
+    collection = chunk.get("collection") or ""
+    intent = _query_intent_terms(query)
+
+    bonus = 0.0
+
+    if collection == "uploaded_matter_docs":
+        bonus += 0.08
+
+    if source_type in {
+        "uploaded_csv",
+        "uploaded_xlsx",
+        "uploaded_pdf",
+        "uploaded_docx",
+        "uploaded_txt",
+    }:
+        bonus += 0.05
+
+    if intent["payment"]:
+        if "invoice" in text or "invoices" in text:
+            bonus += 0.18
+        if "due" in text:
+            bonus += 0.10
+        if "payment" in text or "payments" in text:
+            bonus += 0.10
+        if "receipt" in text or "net 30" in text or "thirty days" in text:
+            bonus += 0.10
+        if source_type in {"uploaded_csv", "uploaded_xlsx"}:
+            bonus += 0.12
+
+    if intent["termination"]:
+        if "termination" in text or "terminate" in text:
+            bonus += 0.15
+        if "notice" in text:
+            bonus += 0.08
+
+    if intent["confidentiality"]:
+        if "confidential" in text or "confidentiality" in text:
+            bonus += 0.15
+        if "disclose" in text or "proprietary" in text:
+            bonus += 0.08
+
+    if intent["restrictive_covenant"]:
+        if "non-solicitation" in text or "solicit" in text:
+            bonus += 0.15
+        if "non-compete" in text or "restrictive covenant" in text:
+            bonus += 0.10
+
+    return round(base_score + bonus, 4)
+
+
+def select_evidence_chunks(
+    query: str,
+    reranked_chunks: list[dict],
+    limit: int = 4,
+) -> list[dict]:
+    if not reranked_chunks:
+        return []
+
+    scored_candidates = []
+
+    for chunk in reranked_chunks:
+        if not _chunk_matches_query_intent(query, chunk):
+            continue
+
+        evidence_score = _score_chunk_for_evidence_selection(query, chunk)
+        scored_candidates.append(
+            {
+                **chunk,
+                "evidence_selection_score": evidence_score,
+            }
+        )
+
+    if not scored_candidates:
+        scored_candidates = [
+            {
+                **chunk,
+                "evidence_selection_score": _score_chunk_for_evidence_selection(
+                    query, chunk
+                ),
+            }
+            for chunk in reranked_chunks[:limit]
+        ]
+
+    scored_candidates = sorted(
+        scored_candidates,
+        key=lambda item: item.get("evidence_selection_score", 0.0),
+        reverse=True,
+    )
+
+    top_score = scored_candidates[0].get("evidence_selection_score", 0.0) or 0.0
+    min_score = max(0.25, top_score * 0.72)
+
+    filtered = [
+        chunk
+        for chunk in scored_candidates
+        if (chunk.get("evidence_selection_score", 0.0) or 0.0) >= min_score
+    ]
+
+    if not filtered:
+        filtered = scored_candidates[:1]
+
+    selected_by_document = defaultdict(list)
+
+    for chunk in filtered:
+        selected_by_document[chunk.get("document_id")].append(chunk)
+
+    best_document_id = None
+    best_document_score = -1.0
+
+    for document_id, chunks in selected_by_document.items():
+        document_score = max(
+            chunk.get("evidence_selection_score", 0.0) or 0.0 for chunk in chunks
+        )
+
+        if document_score > best_document_score:
+            best_document_id = document_id
+            best_document_score = document_score
+
+    primary_document_chunks = [
+        chunk for chunk in filtered if chunk.get("document_id") == best_document_id
+    ]
+
+    secondary_chunks = [
+        chunk for chunk in filtered if chunk.get("document_id") != best_document_id
+    ]
+
+    selected = primary_document_chunks + secondary_chunks
+
+    seen = set()
+    deduped = []
+
+    for chunk in selected:
+        key = (chunk.get("document_id"), chunk.get("chunk_id"))
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+        deduped.append(chunk)
+
+        if len(deduped) >= limit:
+            break
+
+    return deduped
+
+
+def build_clean_citations(selected_chunks: list[dict], limit: int = 4) -> list[dict]:
+    citations = []
+    seen = set()
+
+    for chunk in selected_chunks:
+        key = (chunk.get("document_id"), chunk.get("chunk_id"))
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        citations.append(
+            {
+                "collection": chunk.get("collection"),
+                "document_id": chunk.get("document_id"),
+                "chunk_id": chunk.get("chunk_id"),
+                "citation": chunk.get("citation"),
+                "score": chunk.get("score"),
+                "source_type": chunk.get("source_type"),
+                "evidence_selection_score": chunk.get("evidence_selection_score"),
+            }
+        )
+
+        if len(citations) >= limit:
+            break
+
+    return citations
+
+
+def build_selected_documents(selected_chunks: list[dict]) -> list[dict]:
+    documents = {}
+
+    for chunk in selected_chunks:
+        document_id = chunk.get("document_id")
+
+        if not document_id:
+            continue
+
+        current = documents.get(document_id)
+
+        if current is None:
+            documents[document_id] = {
+                "document_id": document_id,
+                "title": chunk.get("title"),
+                "citation": chunk.get("citation"),
+                "collection": chunk.get("collection"),
+                "source_type": chunk.get("source_type"),
+                "highest_score": chunk.get("score"),
+                "highest_evidence_selection_score": chunk.get(
+                    "evidence_selection_score"
+                ),
+                "selected_chunk_ids": [chunk.get("chunk_id")],
+            }
+        else:
+            current["selected_chunk_ids"].append(chunk.get("chunk_id"))
+
+            if (chunk.get("score") or 0.0) > (current.get("highest_score") or 0.0):
+                current["highest_score"] = chunk.get("score")
+
+            if (chunk.get("evidence_selection_score") or 0.0) > (
+                current.get("highest_evidence_selection_score") or 0.0
+            ):
+                current["highest_evidence_selection_score"] = chunk.get(
+                    "evidence_selection_score"
+                )
+
+    return list(documents.values())
 
 
 def run_secure_agentic_rag_pipeline(
@@ -170,19 +542,38 @@ def run_secure_agentic_rag_pipeline(
         evidence = best_evidence
         query_pack = best_query_pack
 
+        selected_evidence_chunks = select_evidence_chunks(
+            query=state["redacted_query"],
+            reranked_chunks=reranked,
+            limit=4,
+        )
+
+        if selected_evidence_chunks:
+            generation_chunks = selected_evidence_chunks
+        else:
+            generation_chunks = reranked[:4]
+
+        state["selected_evidence_chunks"] = selected_evidence_chunks
+        state["selected_documents"] = build_selected_documents(generation_chunks)
+
         state["private_chunks"] = [
             chunk
-            for chunk in reranked
+            for chunk in generation_chunks
             if chunk.get("collection") == "private_matter_docs"
+        ]
+        state["uploaded_matter_chunks"] = [
+            chunk
+            for chunk in generation_chunks
+            if chunk.get("collection") == "uploaded_matter_docs"
         ]
         state["firm_kb_chunks"] = [
             chunk
-            for chunk in reranked
+            for chunk in generation_chunks
             if chunk.get("collection") == "firm_knowledge_base"
         ]
         state["legal_authority_chunks"] = [
             chunk
-            for chunk in reranked
+            for chunk in generation_chunks
             if chunk.get("collection") == "ny_legal_authorities"
         ]
 
@@ -212,12 +603,12 @@ def run_secure_agentic_rag_pipeline(
 
         answer = generate_answer(
             redacted_query=state["redacted_query"],
-            chunks=reranked[:6],
+            chunks=generation_chunks,
             agent_plan=plan,
         )
         state["generated_answer"] = answer
 
-        contexts = [chunk["text"] for chunk in reranked[:6]]
+        contexts = [chunk["text"] for chunk in generation_chunks]
         faithfulness = check_faithfulness(
             question=state["redacted_query"],
             answer=answer,
@@ -242,16 +633,7 @@ def run_secure_agentic_rag_pipeline(
         state["output_pii_entities"] = output_pii["entities"]
         state["output_policy_status"] = "ALLOW"
 
-        state["citations"] = [
-            {
-                "collection": chunk.get("collection"),
-                "document_id": chunk.get("document_id"),
-                "chunk_id": chunk.get("chunk_id"),
-                "citation": chunk.get("citation"),
-                "score": chunk.get("score"),
-            }
-            for chunk in reranked[:6]
-        ]
+        state["citations"] = build_clean_citations(generation_chunks, limit=4)
 
         state["final_status"] = "SUCCESS"
         state["latency_ms"] = int((time.time() - started) * 1000)

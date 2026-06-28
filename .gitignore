@@ -22,7 +22,7 @@ frontend/out/
 
 # Local runtime/uploaded data
 backend/data/uploaded_docs/
-
+backend/data/uploaded_originals/
 # OS/editor
 .DS_Store
 Thumbs.db

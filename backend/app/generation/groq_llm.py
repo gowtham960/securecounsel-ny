@@ -1,3 +1,5 @@
+import re
+
 from groq import Groq
 
 from app.config import settings
@@ -42,6 +44,9 @@ def _strip_metadata_prefix(text: str) -> str:
         "Confidentiality",
         "Non-Solicitation",
         "Non-Competition",
+        "Sheet:",
+        "Row 1:",
+        "Row 2:",
     ]
 
     first_section_index: int | None = None
@@ -62,6 +67,9 @@ def _strip_metadata_prefix(text: str) -> str:
         "Title:",
         "Jurisdiction:",
         "Citation:",
+        "Original File Type:",
+        "Uploaded By:",
+        "Uploaded At:",
     ]
 
     for marker in metadata_markers:
@@ -176,6 +184,8 @@ def _classify_answer_mode(redacted_query: str, agent_plan: dict) -> dict:
             "what is",
             "what are",
             "what did",
+            "when are",
+            "when is",
             "does the document",
             "does the agreement",
             "does the contract",
@@ -238,6 +248,11 @@ def _split_into_sentences(text: str) -> list[str]:
         ("Section 3 - ", ". Section 3 - "),
         ("Section 4 - ", ". Section 4 - "),
         ("Section 5 - ", ". Section 5 - "),
+        (" Row 2:", ". Row 2:"),
+        (" Row 3:", ". Row 3:"),
+        (" Row 4:", ". Row 4:"),
+        (" Row 5:", ". Row 5:"),
+        (" Row 6:", ". Row 6:"),
     ]
 
     for old, new in replacements:
@@ -251,6 +266,255 @@ def _split_into_sentences(text: str) -> list[str]:
             raw_parts.append(part)
 
     return raw_parts
+
+
+def _query_is_payment_or_invoice_question(redacted_query: str) -> bool:
+    query = redacted_query.lower()
+
+    return any(
+        term in query
+        for term in [
+            "invoice",
+            "invoices",
+            "payment",
+            "payments",
+            "pay",
+            "paid",
+            "due",
+            "payment terms",
+            "payment schedule",
+        ]
+    )
+
+
+def _extract_table_rows(text: str) -> list[str]:
+    normalized = _normalize_text(text)
+
+    if not normalized:
+        return []
+
+    row_matches = re.findall(
+        r"Row\s+\d+:\s*(.*?)(?=\s+Row\s+\d+:|$)",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+
+    rows = []
+
+    for row in row_matches:
+        cleaned = row.strip(" |")
+        if cleaned:
+            rows.append(cleaned)
+
+    return rows
+
+
+def _parse_invoice_row(row: str) -> dict | None:
+    columns = [column.strip() for column in row.split("|")]
+
+    if len(columns) < 4:
+        return None
+
+    row_text = " | ".join(columns)
+    invoice_match = re.search(r"\bINV-[A-Za-z0-9\-]+\b", row_text, flags=re.IGNORECASE)
+    dates = re.findall(r"\b\d{4}-\d{2}-\d{2}\b", row_text)
+
+    if not invoice_match and not dates:
+        return None
+
+    invoice_number = invoice_match.group(0) if invoice_match else None
+    issue_date = dates[0] if len(dates) >= 1 else None
+    due_date = dates[1] if len(dates) >= 2 else None
+
+    amount = None
+    for column in columns:
+        if re.fullmatch(r"\d+(?:\.\d{2})?", column):
+            amount = column
+
+    note_candidates = [
+        column
+        for column in columns
+        if any(
+            term in column.lower()
+            for term in [
+                "pay",
+                "payment",
+                "invoice",
+                "receipt",
+                "net 30",
+                "thirty days",
+                "late payments",
+                "suspension",
+            ]
+        )
+    ]
+
+    note = note_candidates[-1] if note_candidates else None
+
+    vendor = None
+    for column in columns:
+        lowered = column.lower()
+        if (
+            column
+            and not column.startswith("csv_")
+            and column != "matter_acme_smith"
+            and column != "firm_demo"
+            and "vendor payment schedule" not in lowered
+            and not re.fullmatch(r"\bINV-[A-Za-z0-9\-]+\b", column, flags=re.IGNORECASE)
+            and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", column)
+            and not re.fullmatch(r"\d+(?:\.\d{2})?", column)
+            and lowered not in {"pending", "approved", "paid"}
+            and not any(term in lowered for term in ["pay", "payment", "invoice", "receipt"])
+        ):
+            vendor = column
+
+    return {
+        "invoice_number": invoice_number,
+        "vendor": vendor,
+        "issue_date": issue_date,
+        "due_date": due_date,
+        "amount": amount,
+        "note": note,
+        "raw_row": row,
+    }
+
+
+def _extract_invoice_table_answer(
+    redacted_query: str,
+    chunks: list[dict],
+) -> str | None:
+    if not _query_is_payment_or_invoice_question(redacted_query):
+        return None
+
+    invoice_rows = []
+    general_terms = []
+    supporting_chunks = []
+
+    for chunk in chunks:
+        text = chunk.get("text", "")
+        lowered_text = text.lower()
+        source_type = chunk.get("source_type")
+
+        is_table_like = (
+            source_type in {"uploaded_csv", "uploaded_xlsx"}
+            or "row " in lowered_text
+            or "|" in text
+            or "sheet:" in lowered_text
+        )
+
+        if not is_table_like:
+            continue
+
+        rows = _extract_table_rows(text)
+
+        for row in rows:
+            parsed = _parse_invoice_row(row)
+
+            if parsed:
+                invoice_rows.append(
+                    {
+                        **parsed,
+                        "chunk": chunk,
+                    }
+                )
+
+                if chunk not in supporting_chunks:
+                    supporting_chunks.append(chunk)
+
+            lowered_row = row.lower()
+
+            if "thirty days of receipt" in lowered_row:
+                general_terms.append("customers must pay invoices within thirty days of receipt")
+
+            if "net 30" in lowered_row:
+                general_terms.append("payment term is net 30 from receipt")
+
+    if not invoice_rows and not general_terms:
+        return None
+
+    unique_terms = []
+    seen_terms = set()
+
+    for term in general_terms:
+        if term not in seen_terms:
+            seen_terms.add(term)
+            unique_terms.append(term)
+
+    direct_answer_parts = []
+
+    if unique_terms:
+        direct_answer_parts.append(
+            "The retrieved payment schedule states that "
+            + "; ".join(unique_terms)
+            + "."
+        )
+    else:
+        direct_answer_parts.append(
+            "The retrieved payment schedule provides invoice due dates in the uploaded table."
+        )
+
+    rows_with_due_dates = [
+        row for row in invoice_rows if row.get("invoice_number") and row.get("due_date")
+    ]
+
+    if rows_with_due_dates:
+        direct_answer_parts.append("The listed due dates are:")
+
+    detail_lines = []
+
+    for row in rows_with_due_dates[:6]:
+        invoice_number = row.get("invoice_number")
+        vendor = row.get("vendor")
+        due_date = row.get("due_date")
+        note = row.get("note")
+
+        detail = f"- {invoice_number} is due on {due_date}"
+
+        if vendor:
+            detail += f" for {vendor}"
+
+        if note:
+            detail += f" ({note})"
+
+        detail += "."
+
+        detail_lines.append(detail)
+
+    if not supporting_chunks:
+        supporting_chunks = chunks[:2]
+
+    supporting_lines = []
+
+    used_chunk_ids = set()
+
+    for chunk in supporting_chunks[:4]:
+        chunk_id = chunk.get("chunk_id")
+
+        if chunk_id in used_chunk_ids:
+            continue
+
+        used_chunk_ids.add(chunk_id)
+        supporting_lines.append(f"- {_chunk_label(chunk)}")
+
+    answer = (
+        "Direct Answer:\n"
+        + " ".join(direct_answer_parts)
+    )
+
+    if detail_lines:
+        answer += "\n" + "\n".join(detail_lines)
+
+    answer += (
+        "\n\nSource Analysis:\n"
+        "- The answer is extracted from the uploaded payment schedule table rows, not from unrelated matter text.\n\n"
+        "Supporting Sources:\n"
+        + "\n".join(supporting_lines)
+        + "\n\nConfidence: High for what the retrieved payment schedule says.\n\n"
+        "Attorney Review Note:\n"
+        "This is not legal advice. A licensed attorney should review the complete document and matter context."
+    )
+
+    return answer
 
 
 def _extract_most_relevant_sentences(
@@ -269,7 +533,9 @@ def _extract_most_relevant_sentences(
 
             semantic_matches = [
                 ("payment", ["payment", "pay", "invoice", "invoices", "receipt"]),
-                ("invoice", ["invoice", "invoices", "pay", "payment", "receipt"]),
+                ("invoice", ["invoice", "invoices", "pay", "payment", "receipt", "due"]),
+                ("invoices", ["invoice", "invoices", "pay", "payment", "receipt", "due"]),
+                ("due", ["invoice", "invoices", "due", "receipt", "net 30", "thirty days"]),
                 ("termination", ["termination", "terminate", "notice", "cause"]),
                 ("confidential", ["confidential", "proprietary", "disclose", "trade secret"]),
                 ("non-solicitation", ["solicit", "non-solicitation", "clients"]),
@@ -298,6 +564,14 @@ def _extract_most_relevant_sentences(
 
 
 def _demo_document_fact_answer(redacted_query: str, chunks: list[dict]) -> str:
+    table_answer = _extract_invoice_table_answer(
+        redacted_query=redacted_query,
+        chunks=chunks,
+    )
+
+    if table_answer:
+        return table_answer
+
     relevant_sentences = _extract_most_relevant_sentences(
         redacted_query=redacted_query,
         chunks=chunks,
@@ -346,6 +620,14 @@ def _demo_document_fact_answer(redacted_query: str, chunks: list[dict]) -> str:
 
 
 def _demo_summary_answer(redacted_query: str, chunks: list[dict]) -> str:
+    table_answer = _extract_invoice_table_answer(
+        redacted_query=redacted_query,
+        chunks=chunks,
+    )
+
+    if table_answer and _query_is_payment_or_invoice_question(redacted_query):
+        return table_answer
+
     top_chunks = chunks[:3]
 
     summary_points = []
@@ -378,6 +660,14 @@ def _demo_summary_answer(redacted_query: str, chunks: list[dict]) -> str:
 
 
 def _demo_key_dates_answer(redacted_query: str, chunks: list[dict]) -> str:
+    table_answer = _extract_invoice_table_answer(
+        redacted_query=redacted_query,
+        chunks=chunks,
+    )
+
+    if table_answer and _query_is_payment_or_invoice_question(redacted_query):
+        return table_answer
+
     date_terms = [
         "days",
         "months",
@@ -387,6 +677,8 @@ def _demo_key_dates_answer(redacted_query: str, chunks: list[dict]) -> str:
         "effective",
         "expiration",
         "deadline",
+        "due",
+        "invoice",
     ]
 
     candidates = []
@@ -429,15 +721,18 @@ def _demo_key_dates_answer(redacted_query: str, chunks: list[dict]) -> str:
 
 def _demo_legal_risk_answer(redacted_query: str, chunks: list[dict]) -> str:
     private_chunks = [
-        chunk for chunk in chunks
+        chunk
+        for chunk in chunks
         if chunk.get("collection") in {"private_matter_docs", "uploaded_matter_docs"}
     ]
     firm_kb_chunks = [
-        chunk for chunk in chunks
+        chunk
+        for chunk in chunks
         if chunk.get("collection") == "firm_knowledge_base"
     ]
     legal_chunks = [
-        chunk for chunk in chunks
+        chunk
+        for chunk in chunks
         if chunk.get("collection") == "ny_legal_authorities"
     ]
 
@@ -583,6 +878,8 @@ Core rules:
 
 Answer behavior:
 - If the user asks for a document fact, answer the specific fact directly from the retrieved text.
+- If the retrieved context is a CSV/XLSX/table, convert rows into a concise readable answer. Do not paste raw table rows unless necessary.
+- If the user asks when invoices are due, identify payment terms and invoice due dates from the retrieved rows.
 - If the user asks for legal risk or enforceability, provide a legal-risk analysis using only retrieved context.
 - If the user asks for a summary, summarize the retrieved source text.
 - If the user asks for key dates or obligations, extract timing and obligations from the retrieved text.

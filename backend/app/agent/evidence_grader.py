@@ -1,41 +1,61 @@
 from app.config import settings
 
 
-def _has_direct_answer_overlap(query: str, text: str) -> bool:
-    lowered_query = query.lower()
-    lowered_text = text.lower()
+def _contains_any(text: str, terms: list[str]) -> bool:
+    lowered = text.lower()
+    return any(term in lowered for term in terms)
 
-    direct_answer_terms = [
+
+def _has_direct_fact_match(text: str) -> bool:
+    lowered = text.lower()
+
+    payment_terms = [
         "payment",
         "payments",
         "invoice",
         "invoices",
+        "net 30",
         "thirty days",
         "30 days",
+        "receipt",
+        "due",
+    ]
+
+    document_terms = [
+        "uploaded",
+        "original file type",
+        ".csv",
+        ".xlsx",
+        ".pdf",
+        ".docx",
+        "row ",
+        "sheet:",
+        "page ",
+        "document id:",
+        "title:",
+    ]
+
+    legal_business_terms = [
         "termination",
         "confidentiality",
         "confidential",
-        "uploaded",
         "vendor",
-        "document",
+        "agreement",
+        "customer",
+        "pricing",
     ]
 
-    query_hits = [
-        term
-        for term in direct_answer_terms
-        if term in lowered_query
-    ]
+    payment_hits = sum(1 for term in payment_terms if term in lowered)
+    document_hits = sum(1 for term in document_terms if term in lowered)
+    legal_business_hits = sum(1 for term in legal_business_terms if term in lowered)
 
-    if not query_hits:
-        return False
+    if payment_hits >= 2 and document_hits >= 1:
+        return True
 
-    text_hits = [
-        term
-        for term in query_hits
-        if term in lowered_text
-    ]
+    if payment_hits >= 2 and legal_business_hits >= 1:
+        return True
 
-    return len(text_hits) >= 2
+    return False
 
 
 def grade_evidence(reranked_chunks: list[dict]) -> dict:
@@ -47,34 +67,34 @@ def grade_evidence(reranked_chunks: list[dict]) -> dict:
         }
 
     top_chunk = reranked_chunks[0]
-    top_score = top_chunk.get("score", 0.0)
+    top_score = top_chunk.get("score", 0.0) or 0.0
     top_collection = top_chunk.get("collection")
+    top_source_type = top_chunk.get("source_type")
     top_text = top_chunk.get("text", "")
 
     strong_threshold = min(settings.relevance_threshold, 0.50)
-    uploaded_doc_threshold = 0.45
-    weak_threshold = 0.30
+    uploaded_doc_threshold = 0.30
+    weak_threshold = 0.20
 
-    query_candidates = []
-
-    for chunk in reranked_chunks[:3]:
-        chunk_text = chunk.get("text", "")
-        if chunk_text:
-            query_candidates.append(chunk_text)
-
-    combined_top_text = " ".join(query_candidates)
-
-    # Uploaded matter documents often contain short, direct answers.
-    # A slightly lower threshold is acceptable when the top uploaded chunk
-    # directly overlaps with the user's requested terms.
     if (
         top_collection == "uploaded_matter_docs"
         and top_score >= uploaded_doc_threshold
-        and _has_direct_answer_overlap(top_text, combined_top_text)
+        and _has_direct_fact_match(top_text)
     ):
         return {
             "status": "STRONG",
-            "reason": "Top uploaded matter document directly matches the requested terms.",
+            "reason": "Top uploaded matter document contains direct factual terms matching the question.",
+            "top_score": top_score,
+        }
+
+    if (
+        top_source_type in {"uploaded_txt", "uploaded_csv", "uploaded_xlsx", "uploaded_pdf", "uploaded_docx"}
+        and top_score >= uploaded_doc_threshold
+        and _has_direct_fact_match(top_text)
+    ):
+        return {
+            "status": "STRONG",
+            "reason": "Top uploaded file contains direct factual terms matching the question.",
             "top_score": top_score,
         }
 

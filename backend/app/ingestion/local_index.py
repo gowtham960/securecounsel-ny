@@ -43,6 +43,20 @@ def _extract_field(text: str, field_name: str, default: str | None = None) -> st
     return default
 
 
+def _source_type_from_original_file_type(original_file_type: str | None) -> str:
+    extension = (original_file_type or ".txt").strip().lower()
+
+    source_type_by_extension = {
+        ".txt": "uploaded_txt",
+        ".pdf": "uploaded_pdf",
+        ".docx": "uploaded_docx",
+        ".xlsx": "uploaded_xlsx",
+        ".csv": "uploaded_csv",
+    }
+
+    return source_type_by_extension.get(extension, "uploaded_file")
+
+
 def _load_seed_documents() -> list[dict[str, Any]]:
     documents: list[dict[str, Any]] = []
 
@@ -111,8 +125,10 @@ def _load_uploaded_txt_documents() -> list[dict[str, Any]]:
         for path in matter_folder.glob("*.txt"):
             text = _read_text_file(path)
 
-            document_id = path.stem
-            title = path.name
+            document_id = _extract_field(text, "Document ID", path.stem)
+            title = _extract_field(text, "Title", path.name)
+            original_file_type = _extract_field(text, "Original File Type", ".txt")
+            source_type = _source_type_from_original_file_type(original_file_type)
 
             documents.append(
                 {
@@ -120,9 +136,9 @@ def _load_uploaded_txt_documents() -> list[dict[str, Any]]:
                     "document_id": document_id,
                     "firm_id": "firm_demo",
                     "matter_id": matter_id,
-                    "citation": f"Uploaded document: {path.name}",
+                    "citation": f"Uploaded document: {title}",
                     "title": title,
-                    "source_type": "uploaded_txt",
+                    "source_type": source_type,
                     "text": text,
                     "path": str(path),
                 }
