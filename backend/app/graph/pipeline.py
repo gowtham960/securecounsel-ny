@@ -7,10 +7,8 @@ from app.agent.evidence_grader import grade_evidence
 from app.agent.planner import plan_legal_task
 from app.agent.query_decomposer import decompose_queries
 from app.agent.query_rewriter import rewrite_query_for_retry
-from app.auth.demo_auth import (
-    authorize_matter_access,
-    authorize_search_scope,
-)
+from app.auth.demo_auth import authorize_search_scope
+from app.matters.demo_matters import get_matter_for_user
 from app.config import settings
 from app.evaluation.faithfulness import check_faithfulness
 from app.generation.groq_llm import generate_answer
@@ -427,11 +425,7 @@ def run_secure_agentic_rag_pipeline(
             log_audit_event(state)
             return state
 
-        if not authorize_matter_access(
-            role=state["role"],
-            matter_id=matter_id,
-            allowed_matter_ids=state["allowed_matter_ids"],
-        ):
+        if matter_id is not None and get_matter_for_user(user, matter_id) is None:
             state["final_status"] = "DENIED_BY_ROLE_POLICY"
             state["final_answer"] = "Access denied for this matter."
             state["latency_ms"] = int((time.time() - started) * 1000)

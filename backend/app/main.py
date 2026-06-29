@@ -9,6 +9,10 @@ from app.auth.demo_auth import (
     list_demo_users,
 )
 from app.config import settings
+from app.documents.local_documents import (
+    list_documents_for_matter,
+    save_uploaded_text_document,
+)
 from app.governance.audit import list_audit_logs, list_security_events
 from app.graph.pipeline import run_secure_agentic_rag_pipeline
 from app.ingestion.local_index import build_local_chunks
@@ -17,11 +21,8 @@ from app.matters.demo_matters import (
     create_demo_matter,
     get_matter_for_user,
     list_all_assignments,
+    list_all_matters,
     list_matters_for_user,
-)
-from app.documents.local_documents import (
-    list_documents_for_matter,
-    save_uploaded_text_document,
 )
 from app.retrieval.hybrid import hybrid_retrieve
 from app.retrieval.reranker import rerank_chunks
@@ -85,6 +86,8 @@ def get_matter(matter_id: str, user: dict = Depends(get_demo_user)):
         )
 
     return matter
+
+
 @app.get("/documents")
 def get_documents(
     matter_id: str,
@@ -274,6 +277,19 @@ def get_admin_users(user: dict = Depends(get_demo_user)):
 
     return {
         "items": list_demo_users(),
+    }
+
+
+@app.get("/admin/matters")
+def get_admin_matters(user: dict = Depends(get_demo_user)):
+    if not authorize_admin_access(user["role"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Only Firm Admin users can view all matters.",
+        )
+
+    return {
+        "items": list_all_matters(),
     }
 
 
