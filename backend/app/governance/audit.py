@@ -155,7 +155,7 @@ def build_audit_record(state: dict, audit_log_id: str) -> dict:
 
 
 def log_audit_event(state: dict) -> dict:
-    audit_log_id = f"audit_{state.get('request_id')}"
+    audit_log_id = state.get('request_id')
 
     audit_record = build_audit_record(state, audit_log_id)
     security_events = build_security_events(state, audit_log_id)
