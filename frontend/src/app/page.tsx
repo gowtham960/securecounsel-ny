@@ -114,13 +114,13 @@ function Pill({
   value,
 }: {
   label: string;
-  value: string | number | boolean | null;
+  value: string | number | boolean | null | undefined;
 }) {
   return (
     <div className="rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2">
       <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-slate-100">
-        {value === null ? "N/A" : String(value)}
+      <p className="mt-1 break-words text-sm font-semibold text-slate-100">
+        {value === null || value === undefined ? "N/A" : String(value)}
       </p>
     </div>
   );
@@ -137,6 +137,35 @@ function Section({
     <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5 shadow-xl">
       <h2 className="mb-4 text-lg font-semibold text-white">{title}</h2>
       {children}
+    </section>
+  );
+}
+
+function Disclosure({
+  title,
+  children,
+  defaultOpen = false,
+}: {
+  title: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  return (
+    <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5 shadow-xl">
+      <button
+        type="button"
+        onClick={() => setIsOpen((current) => !current)}
+        className="flex w-full items-center justify-between gap-3 text-left"
+      >
+        <h2 className="text-lg font-semibold text-white">{title}</h2>
+        <span className="rounded-full border border-slate-700 px-3 py-1 text-xs text-slate-300">
+          {isOpen ? "Hide" : "Show"}
+        </span>
+      </button>
+
+      {isOpen && <div className="mt-4">{children}</div>}
     </section>
   );
 }
@@ -355,6 +384,15 @@ export default function Home() {
             secure legal AI workspace with role-based access, citations,
             security checks, and audit-ready responses.
           </p>
+
+          <div className="mt-5 flex flex-wrap gap-3">
+            <a
+              href="/admin"
+              className="rounded-2xl border border-cyan-700 bg-cyan-950/40 px-4 py-2 text-sm font-semibold text-cyan-200 hover:border-cyan-400 hover:text-cyan-100"
+            >
+              Open Admin Console
+            </a>
+          </div>
         </header>
 
         <Section title="Demo Login">
@@ -649,29 +687,15 @@ export default function Home() {
                         {chatResponse.answer}
                       </pre>
                     </div>
-                  </Section>
 
-                  <Section title="Security">
-                    <div className="grid gap-3 md:grid-cols-3">
+                    <div className="mt-4 grid gap-3 md:grid-cols-3">
                       <Pill
                         label="Final Status"
                         value={chatResponse.security.final_status}
                       />
                       <Pill
-                        label="Injection"
-                        value={chatResponse.security.injection_label}
-                      />
-                      <Pill
                         label="Evidence"
                         value={chatResponse.security.evidence_status}
-                      />
-                      <Pill
-                        label="Faithfulness"
-                        value={chatResponse.security.hallucination_status}
-                      />
-                      <Pill
-                        label="Top Score"
-                        value={chatResponse.security.relevance_score}
                       />
                       <Pill
                         label="Request ID"
@@ -680,7 +704,36 @@ export default function Home() {
                     </div>
                   </Section>
 
-                  <Section title="Citations">
+                  <Disclosure title="Security Details">
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <Pill
+                        label="Injection"
+                        value={chatResponse.security.injection_label}
+                      />
+                      <Pill
+                        label="Input PII"
+                        value={chatResponse.security.input_pii_detected}
+                      />
+                      <Pill
+                        label="Output PII"
+                        value={chatResponse.security.output_pii_detected}
+                      />
+                      <Pill
+                        label="Faithfulness"
+                        value={chatResponse.security.hallucination_status}
+                      />
+                      <Pill
+                        label="Faithfulness Score"
+                        value={chatResponse.security.faithfulness_score}
+                      />
+                      <Pill
+                        label="Top Score"
+                        value={chatResponse.security.relevance_score}
+                      />
+                    </div>
+                  </Disclosure>
+
+                  <Disclosure title="Citations">
                     {chatResponse.citations.length === 0 ? (
                       <p className="text-slate-400">No citations returned.</p>
                     ) : (
@@ -706,14 +759,12 @@ export default function Home() {
                         ))}
                       </div>
                     )}
-                  </Section>
+                  </Disclosure>
 
                   {chatResponse.agent_plan && (
-                    <Section title="Agent Plan">
+                    <Disclosure title="Agent Workflow">
                       <p className="text-sm text-slate-300">
-                        <span className="font-semibold text-white">
-                          Task:
-                        </span>{" "}
+                        <span className="font-semibold text-white">Task:</span>{" "}
                         {chatResponse.agent_plan.task_type}
                       </p>
                       <p className="mt-2 text-sm text-slate-300">
@@ -722,19 +773,22 @@ export default function Home() {
                         </span>{" "}
                         {chatResponse.agent_plan.sources_needed.join(", ")}
                       </p>
+                      <p className="mt-2 text-sm text-slate-400">
+                        {chatResponse.agent_plan.reason}
+                      </p>
                       <ol className="mt-4 list-decimal space-y-2 pl-5 text-sm text-slate-300">
                         {chatResponse.agent_plan.steps.map((step) => (
                           <li key={step}>{step}</li>
                         ))}
                       </ol>
-                    </Section>
+                    </Disclosure>
                   )}
 
-                  <Section title="Retrieval Debug">
+                  <Disclosure title="Retrieval Debug">
                     <pre className="max-h-96 overflow-auto rounded-2xl bg-slate-900 p-4 text-xs text-slate-300">
                       {JSON.stringify(chatResponse.debug, null, 2)}
                     </pre>
-                  </Section>
+                  </Disclosure>
                 </>
               )}
             </div>
