@@ -1,4 +1,4 @@
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
@@ -9,7 +9,7 @@ import uuid
 from app.config import settings
 
 _client: QdrantClient | None = None
-_model: SentenceTransformer | None = None
+_model: TextEmbedding | None = None
 
 
 def get_client() -> QdrantClient:
@@ -22,13 +22,18 @@ def get_client() -> QdrantClient:
     return _client
 
 
-def get_model() -> SentenceTransformer:
+def get_model() -> TextEmbedding:
     global _model
     if _model is None:
-        print("[qdrant] Loading embedding model...")
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
-        print("[qdrant] Embedding model loaded.")
+        print("[qdrant] Loading FastEmbed model...")
+        _model = TextEmbedding("BAAI/bge-small-en-v1.5")
+        print("[qdrant] FastEmbed model loaded.")
     return _model
+
+
+def _embed(texts: list[str]) -> list[list[float]]:
+    model = get_model()
+    return [v.tolist() for v in model.embed(texts)]
 
 
 def _create_payload_indexes():
@@ -41,7 +46,7 @@ def _create_payload_indexes():
                 field_schema=PayloadSchemaType.KEYWORD,
             )
         except Exception:
-            pass  # index may already exist
+            pass
     print("[qdrant] Payload indexes ready.")
 
 
@@ -58,13 +63,11 @@ def ensure_collection():
 
 
 def upsert_chunks(chunks: list[dict]):
-    """Index a list of chunks into Qdrant. Each chunk must have 'text' and 'metadata'."""
     ensure_collection()
-    model = get_model()
     client = get_client()
 
     texts = [c["text"] for c in chunks]
-    vectors = model.encode(texts, show_progress_bar=False).tolist()
+    vectors = _embed(texts)
 
     points = [
         PointStruct(
@@ -86,13 +89,11 @@ def dense_vector_search(
     matter_id: str | None,
     limit: int = 5,
 ) -> list[dict]:
-    """Semantic vector search against Qdrant."""
     try:
         ensure_collection()
-        model = get_model()
         client = get_client()
 
-        query_vector = model.encode([query])[0].tolist()
+        query_vector = _embed([query])[0]
 
         must = [
             FieldCondition(key="firm_id", match=MatchValue(value=firm_id)),
